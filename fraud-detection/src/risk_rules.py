@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # Merchant categories with disproportionately high fraud rates because payouts
 # are hard to reverse after a chargeback (gift card PINs, crypto wallets, wires).
@@ -10,19 +10,20 @@ _HIGH_RISK_MERCHANTS = {"gift_cards", "crypto", "wire_transfer"}
 _MEDIUM_RISK_MERCHANTS = {"electronics", "jewelry", "travel"}
 
 
-def _num(val: Any) -> float:
-    """Return a numeric value, mapping None and NaN to 0.
+def _num(val: Any, default: Optional[float] = 0) -> Optional[float]:
+    """Return a numeric value, mapping None and NaN to *default*.
 
-    Protects comparisons against rows that had no account match in the join
-    (which pandas fills with NaN) and against callers that omit optional fields.
+    Pass default=None when the caller needs to distinguish "genuinely absent /
+    unknown" from zero — e.g. account_age_days where 0 is a valid value and
+    NaN (pandas join miss) should be treated as unknown rather than brand-new.
     """
     if val is None:
-        return 0
+        return default
     try:
         f = float(val)
-        return 0 if f != f else f   # f != f is True only for NaN
+        return default if f != f else f   # f != f is True only for NaN
     except (TypeError, ValueError):
-        return 0
+        return default
 
 
 def score_transaction(tx: Dict[str, Any]) -> int:
@@ -93,13 +94,13 @@ def score_transaction(tx: Dict[str, Any]) -> int:
     # Newly created accounts are disproportionately used in fraud because
     # attackers open synthetic or stolen-identity accounts to bypass velocity
     # checks on existing accounts.  Missing account_age_days (e.g. guest
-    # checkout) contributes no points rather than crashing.
-    account_age = tx.get("account_age_days")
+    # checkout) or NaN (no matching account row in the join) contributes no
+    # points; default=None distinguishes "unknown" from "zero days old".
+    account_age = _num(tx.get("account_age_days"), default=None)
     if account_age is not None:
-        age = _num(account_age)
-        if age < 30:
+        if account_age < 30:
             score += 20   # Very new — high synthetic/stolen-identity risk
-        elif age < 90:
+        elif account_age < 90:
             score += 10   # Still within the elevated-risk window
 
     # --- KYC (Know Your Customer) level ---
